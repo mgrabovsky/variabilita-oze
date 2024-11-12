@@ -1,0 +1,19 @@
+name: Deploy Shiny app
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    container:
+      image: rocker/shiny:4.4.1
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: install2.r arrow hrbrthemes patchwork tidyverse tsibble
+
+      - name: Deploy Shiny app
+        run: Rscript deploy.r
