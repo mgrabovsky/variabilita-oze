@@ -13,7 +13,7 @@ build-container:
 
 run-container:
 	$(CONTAINER_MANAGER) run --rm --interactive --tty \
-		--env-file .Renviron --publish $(SHINY_PORT):8080 \
+		--publish $(SHINY_PORT):8080 \
 		$(IMAGE_NAME):latest
 
 .PHONY: build-container default run-container
