@@ -190,7 +190,7 @@ server <- function(input, output) {
     onshore_factor <- 1000 * input$wind_installed_gw / onshore_installed_mw
     solar_factor <- 1000 * input$pv_installed_gw / solar_installed_mw
 
-    df_scaled <- cz_entsoe |>
+    cz_entsoe |>
       mutate(
         Load = Load * load_scaling_factor,
         Nuclear = Nuclear * nuclear_factor,
@@ -198,6 +198,74 @@ server <- function(input, output) {
         Solar = Solar * solar_factor,
         Residual = Load - Nuclear - Solar - Onshore
       )
+  })
+
+  df_windowed <- reactive({
+    num_years <- length(unique(df_scaled()$Year))
+    window_size <- as.integer(input$residual_window_size)
+    dispatchable_installed_mw <- 1000 * input$dispatchable_installed_gw
+
+    df_scaled_windowed <- df_scaled() |>
+      mutate(Dispatched = 0)
+
+    if (window_size > 1) {
+      df_scaled_windowed <- df_scaled_windowed |>
+        as_tsibble(index = Date) |>
+        tile_tsibble(.size = window_size) |>
+        as_tibble() |>
+        summarise(
+          Date = first(Date),
+          Demand = sum(Load),
+          Residual = sum(Residual),
+          Dispatched = sum(Dispatched),
+          Nuclear = sum(Nuclear),
+          Onshore = sum(Onshore),
+          Solar = sum(Solar),
+          .by = .id
+        ) |>
+        mutate(
+          Year = year(Date),
+          Month = month(Date)
+        )
+    } else {
+      df_scaled_windowed <- df_scaled_windowed |>
+        mutate(.id = row_number())
+    }
+
+    if (dispatchable_installed_mw > 0) {
+      df_aggregated <- df_scaled_windowed
+      df_scaled_windowed <- df_scaled() |>
+        as_tsibble(index = Date) |>
+        tile_tsibble(.size = window_size) |>
+        as_tibble() |>
+        left_join(
+          select(df_aggregated, .id, ResidualAgg = Residual),
+          join_by(.id)
+        ) |>
+        mutate(
+          Dispatched = if_else(
+            ResidualAgg <= 0,
+            0,
+            pmin(Residual, dispatchable_installed_mw)
+          )
+        ) |>
+        summarise(
+          Date = first(Date),
+          Demand = sum(Load),
+          Residual = sum(Residual),
+          Dispatched = sum(Dispatched),
+          Nuclear = sum(Nuclear),
+          Onshore = sum(Onshore),
+          Solar = sum(Solar),
+          .by = .id
+        ) |>
+        mutate(
+          Year = year(Date),
+          Month = month(Date)
+        )
+    }
+
+    df_scaled_windowed
   })
 
   output$summaries_text <- renderUI({
@@ -223,17 +291,18 @@ server <- function(input, output) {
   })
 
   output$summaries_table <- renderTable({
-    df_scaled() |>
+    df_windowed() |>
       summarise(
-        Demand = sum(Load) / 1e6,
+        Demand = sum(Demand) / 1e6,
         Onshore = sum(Onshore) / 1e6,
         Solar = sum(Solar) / 1e6,
         Excess = -sum(pmin(0, Residual)) / 1e6,
+        Dispatched = sum(Dispatched) / 1e6,
         .by = Year
       ) |>
       summarise(across(!Year, mean)) |>
       mutate(`Onshore:Solar` = round(Onshore / Solar, 1)) |>
-      select(Excess, `Onshore:Solar`) |>
+      select(Excess, Dispatched, `Onshore:Solar`) |>
       pivot_longer(
         everything(),
         names_to = "Metric",
@@ -245,55 +314,8 @@ server <- function(input, output) {
     {
       num_years <- length(unique(df_scaled()$Year))
       window_size <- as.integer(input$residual_window_size)
-      dispatchable_installed_mw <- 1000 * input$dispatchable_installed_gw
 
-      df_scaled_windowed <- df_scaled() |>
-        mutate(Dispatched = 0)
-
-      if (window_size > 1) {
-        df_scaled_windowed <- df_scaled_windowed |>
-          as_tsibble(index = Date) |>
-          tile_tsibble(.size = window_size) |>
-          as_tibble() |>
-          summarise(
-            Date = first(Date),
-            Residual = sum(Residual),
-            Dispatched = sum(Dispatched),
-            .by = .id
-          ) |>
-          mutate(Month = month(Date))
-      } else {
-        df_scaled_windowed <- df_scaled_windowed |>
-          mutate(.id = row_number())
-      }
-
-      if (dispatchable_installed_mw > 0) {
-        df_aggregated <- df_scaled_windowed
-        df_scaled_windowed <- df_scaled() |>
-          as_tsibble(index = Date) |>
-          tile_tsibble(.size = window_size) |>
-          as_tibble() |>
-          left_join(
-            select(df_aggregated, .id, ResidualAgg = Residual),
-            join_by(.id)
-          ) |>
-          mutate(
-            Dispatched = if_else(
-              ResidualAgg <= 0,
-              0,
-              pmin(Residual, dispatchable_installed_mw)
-            )
-          ) |>
-        summarise(
-          Date = first(Date),
-          Residual = sum(Residual),
-          Dispatched = sum(Dispatched),
-          .by = .id
-        ) |>
-        mutate(Month = month(Date))
-      }
-
-      df_scaled_windowed |>
+      df_windowed() |>
         mutate(
           Month = factor(Month, labels = month.abb),
           Category = case_when(
