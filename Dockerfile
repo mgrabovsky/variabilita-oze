@@ -1,6 +1,6 @@
 FROM rocker/shiny:4.4.1
 
-ARG R_PACKAGES="arrow hrbrthemes patchwork rsconnect tidyverse tsibble"
+ARG R_PACKAGES="arrow hrbrthemes patchwork tidyverse tsibble"
 
 EXPOSE 8080
 
