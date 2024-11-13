@@ -261,16 +261,16 @@ server <- function(input, output) {
             0,
             # Dispatch to cover residual demand up to available capacity.
             pmin(Residual, dispatchable_installed_mw)
-          ),
-          # Update shortage: exclude dispatchable generation.
-          Shortage = pmax(0, Residual - Dispatchable)
+          )
         ) |>
         summarise(
           Date = first(Date),
           across(
-            Demand | Dispatchable | Nuclear | Onshore | Residual | Shortage | Solar,
+            Demand | Dispatchable | Nuclear | Onshore | Residual | Solar,
             sum
           ),
+          # Update shortage so that it matches following the aggregation.
+          Shortage = sum(pmax(0, Residual - Dispatchable)),
           .by = .id
         ) |>
         mutate(
@@ -318,7 +318,7 @@ server <- function(input, output) {
             # side...
             Shortage <= 0 ~ "Covered",
             .default = "Shortage"
-          ) |> fct_relevel("Shortage"),
+          ) |> factor(levels = c("Shortage", "Covered", "Excess")),
         ) |>
         ggplot(aes(-Residual / 1000)) +
         geom_vline(xintercept = 0, colour = "grey") +
