@@ -49,26 +49,39 @@ df_installed <- tribble(
   "Solar", 2019, 2069,
   "Solar", 2020, 2080,
   "Solar", 2021, 2088,
-  "Solar", 2022, 2449,
-  "Solar", 2023, 3272
+  "Solar", 2022, 2082,
+  "Solar", 2023, 2800  # Approximately.
 )
 
 nuclear_installed_mw <- 4047
-onshore_installed_mw <- 320
-solar_installed_mw <- 2250
 
 yhour <- \(dt) hour(dt) + (yday(dt) - 1) * 24
 
 cz_entsoe <- arrow::read_parquet("entsoe-cz.parquet") |>
-  select(Date, Load, Solar, Onshore, Nuclear) |>
+  select(Date, Demand = Load, Nuclear, Onshore, Solar) |>
   mutate(
     Year = year(Date),
-    Month = month(Date),
-    Day = day(Date),
-    DayOfYear = yday(Date),
-    Hour = hour(Date),
-    HourOfYear = yhour(Date)
-  )
+    # Month = month(Date),
+    # Day = day(Date),
+    # DayOfYear = yday(Date),
+    # Hour = hour(Date),
+    # HourOfYear = yhour(Date)
+  ) |>
+  left_join(
+    pivot_wider(
+      df_installed,
+      names_from = Source,
+      names_prefix = "Installed",
+      values_from = InstalledMW
+    ),
+    join_by(Year)
+  ) |>
+  mutate(
+    Nuclear = Nuclear / nuclear_installed_mw,
+    Onshore = Onshore / InstalledOnshore,
+    Solar = Solar / InstalledSolar
+  ) |>
+  select(!starts_with("Installed"))
 
 ui <- page_sidebar(
   title = "Explorace variability OZE",
@@ -141,7 +154,9 @@ ui <- page_sidebar(
             selected = 1
           ),
           h4("Shrnutí"),
-          uiOutput(outputId = "summaries_text"),
+          tags$p(
+            "Průměrné roční hodnoty spotřeby, výroby a poměr výroby z větru a slunce:"
+          ),
           tableOutput(outputId = "summaries_table")
         )
       )
@@ -185,18 +200,19 @@ ui <- page_sidebar(
 server <- function(input, output) {
   df_scaled <- reactive({
     load_scaling_factor <- 1 + input$load_increase_pct / 100
-    nuclear_factor <- 1000 * input$nuclear_installed_gw / nuclear_installed_mw
-    # TODO: Replace by year-specific capacities.
-    onshore_factor <- 1000 * input$wind_installed_gw / onshore_installed_mw
-    solar_factor <- 1000 * input$pv_installed_gw / solar_installed_mw
+    nuclear_mw <- 1000 * input$nuclear_installed_gw
+    onshore_mw <- 1000 * input$wind_installed_gw
+    solar_mw <- 1000 * input$pv_installed_gw
 
     cz_entsoe |>
       mutate(
-        Load = Load * load_scaling_factor,
-        Nuclear = Nuclear * nuclear_factor,
-        Onshore = Onshore * onshore_factor,
-        Solar = Solar * solar_factor,
-        Residual = Load - Nuclear - Solar - Onshore
+        Demand = Demand * load_scaling_factor,
+        Nuclear = Nuclear * nuclear_mw,
+        Onshore = Onshore * onshore_mw,
+        Solar = Solar * solar_mw,
+        Residual = Demand - Nuclear - Solar - Onshore,
+        Dispatchable = 0,
+        Shortage = pmax(0, Residual - Dispatchable)
       )
   })
 
@@ -205,35 +221,28 @@ server <- function(input, output) {
     window_size <- as.integer(input$residual_window_size)
     dispatchable_installed_mw <- 1000 * input$dispatchable_installed_gw
 
+    # Sum in each window tile.
     df_scaled_windowed <- df_scaled() |>
-      mutate(Dispatched = 0)
-
-    if (window_size > 1) {
-      df_scaled_windowed <- df_scaled_windowed |>
-        as_tsibble(index = Date) |>
-        tile_tsibble(.size = window_size) |>
-        as_tibble() |>
-        summarise(
-          Date = first(Date),
-          Demand = sum(Load),
-          Residual = sum(Residual),
-          Dispatched = sum(Dispatched),
-          Nuclear = sum(Nuclear),
-          Onshore = sum(Onshore),
-          Solar = sum(Solar),
-          .by = .id
-        ) |>
-        mutate(
-          Year = year(Date),
-          Month = month(Date)
-        )
-    } else {
-      df_scaled_windowed <- df_scaled_windowed |>
-        mutate(.id = row_number())
-    }
+      as_tsibble(index = Date) |>
+      tile_tsibble(.size = window_size) |>
+      as_tibble() |>
+      summarise(
+        Date = first(Date),
+        across(
+          Demand | Dispatchable | Nuclear | Onshore | Residual | Shortage | Solar,
+          sum
+        ),
+        .by = .id
+      ) |>
+      mutate(
+        Year = year(Date),
+        Month = month(Date)
+      )
 
     if (dispatchable_installed_mw > 0) {
       df_aggregated <- df_scaled_windowed
+      # Dispatch available capacity in hours of shortage, but only if there's
+      # residual demand in the window.
       df_scaled_windowed <- df_scaled() |>
         as_tsibble(index = Date) |>
         tile_tsibble(.size = window_size) |>
@@ -242,21 +251,26 @@ server <- function(input, output) {
           select(df_aggregated, .id, ResidualAgg = Residual),
           join_by(.id)
         ) |>
+        # Calculate dispatch of (virtual) dispatchable sources in each hour.
         mutate(
-          Dispatched = if_else(
+          Dispatchable = if_else(
             ResidualAgg <= 0,
+            # No dispatch as there's no residual demand in the window -- we assume
+            # any shortages in this tile are balanced by excess generation in some of
+            # the hours (assuming perfect storage).
             0,
+            # Dispatch to cover residual demand up to available capacity.
             pmin(Residual, dispatchable_installed_mw)
-          )
+          ),
+          # Update shortage: exclude dispatchable generation.
+          Shortage = pmax(0, Residual - Dispatchable)
         ) |>
         summarise(
           Date = first(Date),
-          Demand = sum(Load),
-          Residual = sum(Residual),
-          Dispatched = sum(Dispatched),
-          Nuclear = sum(Nuclear),
-          Onshore = sum(Onshore),
-          Solar = sum(Solar),
+          across(
+            Demand | Dispatchable | Nuclear | Onshore | Residual | Shortage | Solar,
+            sum
+          ),
           .by = .id
         ) |>
         mutate(
@@ -268,45 +282,25 @@ server <- function(input, output) {
     df_scaled_windowed
   })
 
-  output$summaries_text <- renderUI({
-    df_sum <- df_scaled() |>
-      summarise(
-        Demand = sum(Load) / 1e6,
-        Onshore = sum(Onshore) / 1e6,
-        Solar = sum(Solar) / 1e6,
-        .by = Year
-      ) |>
-      summarise(across(!Year, mean)) |>
-      mutate(`Onshore:Solar` = round(Onshore / Solar, 1))
-
-    tags$p(
-      "Ročně se spotřebuje v průměru ",
-      tags$b(round(df_sum$Demand, 2), " TWh"),
-      "elektřiny. Vyrobí se v průměru ",
-      tags$b(round(df_sum$Solar, 2), " TWh ze slunce"),
-      "a",
-      tags$b(round(df_sum$Onshore, 2), " TWh z větru"),
-      "."
-    )
-  })
-
   output$summaries_table <- renderTable({
+    dispatchable_installed_gw <- input$dispatchable_installed_gw
+
     df_windowed() |>
       summarise(
-        Demand = sum(Demand) / 1e6,
-        Onshore = sum(Onshore) / 1e6,
-        Solar = sum(Solar) / 1e6,
         Excess = -sum(pmin(0, Residual)) / 1e6,
-        Dispatched = sum(Dispatched) / 1e6,
+        across(
+          Demand | Dispatchable | Nuclear | Onshore | Shortage | Solar,
+          ~ sum(.x) / 1e6
+        ),
+        `Dispatchable CF` = Dispatchable / (dispatchable_installed_gw * 8.76),
         .by = Year
       ) |>
       summarise(across(!Year, mean)) |>
       mutate(`Onshore:Solar` = round(Onshore / Solar, 1)) |>
-      select(Excess, Dispatched, `Onshore:Solar`) |>
       pivot_longer(
         everything(),
-        names_to = "Metric",
-        values_to = "Value"
+        names_to = "Veličina",
+        values_to = "Hodnota"
       )
   })
 
@@ -320,9 +314,11 @@ server <- function(input, output) {
           Month = factor(Month, labels = month.abb),
           Category = case_when(
             Residual <= 0 ~ "Excess",
-            (Residual - Dispatched) <= 0 ~ "Covered",
+            # NOTE: Shortage should never be negative, but just to be on the safe
+            # side...
+            Shortage <= 0 ~ "Covered",
             .default = "Shortage"
-          ) |> fct_relevel("Shortage")
+          ) |> fct_relevel("Shortage"),
         ) |>
         ggplot(aes(-Residual / 1000)) +
         geom_vline(xintercept = 0, colour = "grey") +
@@ -364,24 +360,13 @@ server <- function(input, output) {
       window_size <- input$cf_window_size
 
       df_cfs <- cz_entsoe |>
-        left_join(
-          pivot_wider(
-            df_installed,
-            names_from = "Source",
-            names_prefix = "Installed",
-            values_from = "InstalledMW"
-          ),
-          join_by(Year)
-        ) |>
         rename(Datetime = Date) |>
         mutate(
-          OnshoreCf = Onshore / InstalledOnshore,
-          SolarCf = Solar / InstalledSolar,
-          CombinedCf = (1 - solar_weight) * OnshoreCf + solar_weight * SolarCf
+          CombinedCf = (1 - solar_weight) * Onshore + solar_weight * Solar
         ) |>
         as_tsibble(index = Datetime) |>
         index_by(Date = as_date(Datetime)) |>
-        summarise(across(ends_with("Cf"), mean))
+        summarise(across(CombinedCf | Onshore | Solar, mean))
 
       if (window_size > 1) {
         df_cfs <- df_cfs |>
@@ -389,7 +374,7 @@ server <- function(input, output) {
           as_tibble() |>
           summarise(
             Date = first(Date),
-            across(ends_with("Cf"), mean),
+            across(CombinedCf | Onshore | Solar, mean),
             .by = .id
           ) |>
           as_tsibble(index = Date)
