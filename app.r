@@ -279,7 +279,8 @@ server <- function(input, output) {
         )
     }
 
-    df_scaled_windowed
+    df_scaled_windowed |>
+      mutate(Excess = pmax(0, -Residual))
   })
 
   output$summaries_table <- renderTable({
@@ -287,9 +288,8 @@ server <- function(input, output) {
 
     df_windowed() |>
       summarise(
-        Excess = -sum(pmin(0, Residual)) / 1e6,
         across(
-          Demand | Dispatchable | Nuclear | Onshore | Shortage | Solar,
+          Demand | Nuclear | Onshore | Solar | Dispatchable | Excess | Shortage,
           ~ sum(.x) / 1e6
         ),
         `Dispatchable CF` = Dispatchable / (dispatchable_installed_gw * 8.76),
@@ -379,40 +379,6 @@ server <- function(input, output) {
           ) |>
           as_tsibble(index = Date)
       }
-
-      # p_onshore <- df_cfs |>
-      #   ggplot() +
-      #   geom_tile(
-      #     aes(yday(Date), year(Date), fill = OnshoreCf),
-      #     width = window_size
-      #   ) +
-      #   scale_fill_viridis_c("Koef.\nvyužití") +
-      #   scale_x_continuous("Den v roce", expand = expansion(mult = .01)) +
-      #   scale_y_reverse() +
-      #   expand_limits(fill = 0) +
-      #   ggtitle("Využití větrných elektráren") +
-      #   theme(
-      #     axis.title.y = element_blank(),
-      #     panel.grid.major.y = element_blank()
-      #   )
-
-      # p_solar <- df_cfs |>
-      #   ggplot() +
-      #   geom_tile(
-      #     aes(yday(Date), year(Date), fill = SolarCf),
-      #     width = window_size
-      #   ) +
-      #   scale_fill_viridis_c("Koef.\nvyužití", option = "inferno") +
-      #   scale_x_continuous("Den v roce", expand = expansion(mult = .01)) +
-      #   scale_y_reverse() +
-      #   expand_limits(fill = 0) +
-      #   ggtitle("Využití fotovoltaických elektráren") +
-      #   theme(
-      #     axis.title.y = element_blank(),
-      #     panel.grid.major.y = element_blank()
-      #   )
-
-      # (p_onshore / p_solar)
 
       p_combined <- df_cfs |>
         ggplot() +
