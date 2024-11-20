@@ -283,7 +283,7 @@ server <- function(input, output) {
     }
 
     df_scaled_windowed |>
-      mutate(Excess = pmax(0, -Residual))
+      mutate(Surplus = pmax(0, -Residual))
   })
 
   output$summaries_table <- renderTable({
@@ -292,7 +292,7 @@ server <- function(input, output) {
     df_windowed() |>
       summarise(
         across(
-          Demand | Nuclear | Onshore | Solar | Dispatchable | Excess | Shortage,
+          Demand | Nuclear | Onshore | Solar | Dispatchable | Surplus | Shortage,
           ~ sum(.x) / 1e6
         ),
         `Dispatchable CF` = Dispatchable / (dispatchable_installed_gw * 8.76),
@@ -316,12 +316,12 @@ server <- function(input, output) {
         mutate(
           Month = factor(Month, labels = month.abb),
           Category = case_when(
-            Residual <= 0 ~ "Excess",
+            Residual <= 0 ~ "Surplus",
             # NOTE: Shortage should never be negative, but just to be on the safe
             # side...
             Shortage <= 0 ~ "Covered",
             .default = "Shortage"
-          ) |> factor(levels = c("Shortage", "Covered", "Excess")),
+          ) |> factor(levels = c("Shortage", "Covered", "Surplus")),
         ) |>
         ggplot(aes(-Residual / 1000)) +
         geom_vline(xintercept = 0, colour = "grey") +
@@ -335,12 +335,12 @@ server <- function(input, output) {
           "",
           values = c(
             Covered = "lightblue",
-            Excess = "grey60",
+            Surplus = "grey60",
             Shortage = "tomato3"
           ),
           labels = c(
             Covered = "Spotřeba pokryta\nřiditelnými zdroji",
-            Excess = "Nadvýroba z neflexibilních\nzdrojů",
+            Surplus = "Nadvýroba z neflexibilních\nzdrojů",
             Shortage = "Spotřeba nepokryta zcela"
           )
         ) +
