@@ -2,6 +2,9 @@ name: Deploy Shiny app
 on:
   push:
     branches: [main]
+    paths:
+      - '*.parquet'
+      - '*.r'
   workflow_dispatch:
 jobs:
   deploy:
