@@ -55,18 +55,15 @@ df_installed <- tribble(
 
 nuclear_installed_mw <- 4047
 
-yhour <- \(dt) hour(dt) + (yday(dt) - 1) * 24
-
 cz_entsoe <- arrow::read_parquet("entsoe-cz.parquet") |>
   select(Date, Demand = Load, Nuclear, Onshore, Solar) |>
   mutate(
     Year = year(Date),
-    # Month = month(Date),
-    # Day = day(Date),
-    # DayOfYear = yday(Date),
-    # Hour = hour(Date),
-    # HourOfYear = yhour(Date)
-  ) |>
+    # There are a couple of hours with zero load, replace those with linear
+    # approximation (the mean of the two neighbouring hours if there's only
+    # one missing).
+    across(Demand, ~ if_else(.x == 0, NA, .x) |> zoo::na.approx(maxgap = 2))
+  )
   left_join(
     pivot_wider(
       df_installed,
@@ -251,16 +248,22 @@ server <- function(input, output) {
           select(df_aggregated, .id, ResidualAgg = Residual),
           join_by(.id)
         ) |>
-        # Calculate dispatch of (virtual) dispatchable sources in each hour.
         mutate(
+          # Calculate production of (virtual) dispatchable sources in each hour.
+          # TODO: This does not work as well as I'd like it to. It leads to doubling
+          # the production (inflexible + dispatchable) to cover some hours in days of
+          # shortfall.
           Dispatchable = if_else(
             ResidualAgg <= 0,
             # No dispatch as there's no residual demand in the window -- we assume
-            # any shortages in this tile are balanced by excess generation in some of
+            # any shortages in this tile are balanced by surplus generation in some of
             # the hours (assuming perfect storage).
+            # NOTE: It's not exactly storage as it can move energy in time both
+            # forward and backward. But it can be a sort of approximation for moving
+            # energy across days if there are large enough surpluses.
             0,
             # Dispatch to cover residual demand up to available capacity.
-            pmin(Residual, dispatchable_installed_mw)
+            pmin(pmax(0, Residual), dispatchable_installed_mw)
           )
         ) |>
         summarise(
