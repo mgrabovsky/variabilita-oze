@@ -63,7 +63,7 @@ cz_entsoe <- arrow::read_parquet("entsoe-cz.parquet") |>
     # approximation (the mean of the two neighbouring hours if there's only
     # one missing).
     across(Demand, ~ if_else(.x == 0, NA, .x) |> zoo::na.approx(maxgap = 2))
-  )
+  ) |>
   left_join(
     pivot_wider(
       df_installed,
