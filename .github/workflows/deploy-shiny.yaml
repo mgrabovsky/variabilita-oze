@@ -13,7 +13,7 @@ jobs:
       image: rocker/shiny:4.4.1
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies
         run: install2.r arrow hrbrthemes patchwork rsconnect tidyverse tsibble zoo
